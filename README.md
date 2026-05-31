@@ -19,9 +19,6 @@
   </p>
   <p align="center">(* Corresponding author)</p>
 
-  <h3 align="center"> ICRA 2026</h3>
-
-  <h3 align="center"><a href="https://arxiv.org/abs/2603.06989">Paper</a></h3>
   <div align="center"></div>
 
 <p align="center">
@@ -81,13 +78,6 @@ bash scripts/download_tum.sh
 bash scripts/download_replica.sh
 ```
 
-### EuRoC MAV dataset
-```bash
-bash scripts/download_euroc.sh
-```
-
-
-
 ## Run
 ### Monocular
 ```bash
@@ -101,10 +91,6 @@ python slam.py --config configs/rgbd/tum/fr3_office.yaml
 
 ```bash
 python slam.py --config configs/rgbd/replica/office0.yaml
-```
-Or the single process version as
-```bash
-python slam.py --config configs/rgbd/replica/office0_sp.yaml
 ```
 
 
