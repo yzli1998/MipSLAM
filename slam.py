@@ -21,6 +21,8 @@ from utils.multiprocessing_utils import FakeQueue
 from utils.slam_backend import BackEnd
 from utils.slam_frontend import FrontEnd
 
+from utils.slam_structure_closure import StructureClosure
+
 
 class SLAM:
     def __init__(self, config, save_dir=None):
@@ -71,9 +73,11 @@ class SLAM:
 
         self.frontend = FrontEnd(self.config)
         self.backend = BackEnd(self.config)
+        self.struct_closure = StructureClosure(self.config)
 
         self.frontend.dataset = self.dataset
         self.frontend.background = self.background
+        self.backend.struct_closure = self.struct_closure
         self.frontend.pipeline_params = self.pipeline_params
         self.frontend.frontend_queue = frontend_queue
         self.frontend.backend_queue = backend_queue
@@ -139,6 +143,7 @@ class SLAM:
                 self.background,
                 kf_indices=kf_indices,
                 iteration="before_opt",
+                save_image=False,
             )
             columns = ["tag", "psnr", "ssim", "lpips", "RMSE ATE", "FPS"]
             metrics_table = wandb.Table(columns=columns)
@@ -150,8 +155,9 @@ class SLAM:
                 ATE,
                 FPS,
             )
+            del rendering_result
 
-            # re-used the frontend queue to retrive the gaussians from the backend.
+            # re-used the frontend queue to retrieve the gaussians from the backend.
             while not frontend_queue.empty():
                 frontend_queue.get()
             backend_queue.put(["color_refinement"])
@@ -163,27 +169,34 @@ class SLAM:
                 if data[0] == "sync_backend" and frontend_queue.empty():
                     gaussians = data[1]
                     self.gaussians = gaussians
+                    del data
                     break
 
-            rendering_result = eval_rendering(
-                self.frontend.cameras,
-                self.gaussians,
-                self.dataset,
-                self.save_dir,
-                self.pipeline_params,
-                self.background,
-                kf_indices=kf_indices,
-                iteration="after_opt",
-            )
-            metrics_table.add_data(
-                "After",
-                rendering_result["mean_psnr"],
-                rendering_result["mean_ssim"],
-                rendering_result["mean_lpips"],
-                ATE,
-                FPS,
-            )
-            wandb.log({"Metrics": metrics_table})
+            torch.cuda.empty_cache()
+
+            resolutions = [0, 1, 2, 3, 4]
+            for res in resolutions:
+                rendering_result = eval_rendering(
+                    self.frontend.cameras,
+                    self.gaussians,
+                    self.dataset,
+                    self.save_dir,
+                    self.pipeline_params,
+                    self.background,
+                    kf_indices=kf_indices,
+                    iteration="after_opt",
+                    resolution=res
+                )
+                metrics_table.add_data(
+                    "After",
+                    rendering_result["mean_psnr"],
+                    rendering_result["mean_ssim"],
+                    rendering_result["mean_lpips"],
+                    ATE,
+                    FPS,
+                )
+                wandb.log({"Metrics": metrics_table})
+                del rendering_result
             save_gaussians(self.gaussians, self.save_dir, "final_after_opt", final=True)
 
         backend_queue.put(["stop"])

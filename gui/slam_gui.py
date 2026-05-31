@@ -52,7 +52,8 @@ class SLAM_GUI:
         self.render_img = None
 
         if params_gui is not None:
-            self.background = params_gui.background
+            # self.background = params_gui.background
+            self.background = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
             self.gaussian_cur = params_gui.gaussians
             self.init = True
             self.q_main2vis = params_gui.q_main2vis
@@ -599,7 +600,7 @@ class SLAM_GUI:
             if self.gaussian_cur is None:
                 return
             glfw.poll_events()
-            gl.glClearColor(0, 0, 0, 1.0)
+            gl.glClearColor(1, 1, 1, 1.0)
             gl.glClear(
                 gl.GL_COLOR_BUFFER_BIT
                 | gl.GL_DEPTH_BUFFER_BIT
@@ -632,7 +633,7 @@ class SLAM_GUI:
             bufferdata = gl.glReadPixels(
                 0, 0, width, height, gl.GL_RGB, gl.GL_UNSIGNED_BYTE
             )
-            img = np.frombuffer(bufferdata, np.uint8, -1).reshape(height, width, 3)
+            img = np.frombuffer(bufferdata, np.uint8, -1).reshape(height, width, 3).copy()
             cv2.flip(img, 0, img)
             render_img = o3d.geometry.Image(img)
             glfw.swap_buffers(self.window_gl)
@@ -656,7 +657,7 @@ class SLAM_GUI:
         if results is None:
             return
         self.render_img = self.render_o3d_image(results, current_cam)
-        self.widget3d.scene.set_background([0, 0, 0, 1], self.render_img)
+        self.widget3d.scene.set_background([1, 1, 1, 1], self.render_img)
 
     def scene_update(self):
         self.receive_data(self.q_main2vis)

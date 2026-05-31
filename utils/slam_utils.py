@@ -1,4 +1,10 @@
 import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.patches import Rectangle
+import os
+from datetime import datetime
 
 
 def image_gradient(image):
@@ -95,7 +101,7 @@ def get_loss_mapping(config, image, depth, viewpoint, opacity, initialization=Fa
         image_ab = (torch.exp(viewpoint.exposure_a)) * image + viewpoint.exposure_b
     if config["Training"]["monocular"]:
         return get_loss_mapping_rgb(config, image_ab, depth, viewpoint)
-    return get_loss_mapping_rgbd(config, image_ab, depth, viewpoint)
+    return get_loss_mapping_rgbd(config, image_ab, depth, viewpoint, initialization)
 
 
 def get_loss_mapping_rgb(config, image, depth, viewpoint):
@@ -108,6 +114,7 @@ def get_loss_mapping_rgb(config, image, depth, viewpoint):
     l1_rgb = torch.abs(image * rgb_pixel_mask - gt_image * rgb_pixel_mask)
 
     return l1_rgb.mean()
+
 
 
 def get_loss_mapping_rgbd(config, image, depth, viewpoint, initialization=False):
@@ -133,6 +140,7 @@ def get_median_depth(depth, opacity=None, mask=None, return_std=False):
     opacity = opacity.detach()
     valid = depth > 0
     if opacity is not None:
+        
         valid = torch.logical_and(valid, opacity > 0.95)
     if mask is not None:
         valid = torch.logical_and(valid, mask)

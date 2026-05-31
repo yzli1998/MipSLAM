@@ -21,6 +21,10 @@ from gaussian_splatting.utils.loss_utils import ssim
 from gaussian_splatting.utils.system_utils import mkdir_p
 from utils.logging_utils import Log
 
+import torchvision.utils as vutils
+import os
+import torch.nn.functional as F
+
 
 def evaluate_evo(poses_gt, poses_est, plot_dir, label, monocular=False):
     ## Plot
@@ -40,9 +44,9 @@ def evaluate_evo(poses_gt, poses_est, plot_dir, label, monocular=False):
     Log("RMSE ATE \[m]", ape_stat, tag="Eval")
 
     with open(
-        os.path.join(plot_dir, "stats_{}.json".format(str(label))),
-        "w",
-        encoding="utf-8",
+            os.path.join(plot_dir, "stats_{}.json".format(str(label))),
+            "w",
+            encoding="utf-8",
     ) as f:
         json.dump(ape_stats, f, indent=4)
 
@@ -98,7 +102,7 @@ def eval_ate(frames, kf_ids, save_dir, iterations, final=False, monocular=False)
 
     label_evo = "final" if final else "{:04}".format(iterations)
     with open(
-        os.path.join(plot_dir, f"trj_{label_evo}.json"), "w", encoding="utf-8"
+            os.path.join(plot_dir, f"trj_{label_evo}.json"), "w", encoding="utf-8"
     ) as f:
         json.dump(trj_data, f, indent=4)
 
@@ -109,41 +113,98 @@ def eval_ate(frames, kf_ids, save_dir, iterations, final=False, monocular=False)
         label=label_evo,
         monocular=monocular,
     )
-    wandb.log({"frame_idx": latest_frame_idx, "ate": ate})
+    # wandb.log({"frame_idx": latest_frame_idx, "ate": ate})
     return ate
 
 
 def eval_rendering(
-    frames,
-    gaussians,
-    dataset,
-    save_dir,
-    pipe,
-    background,
-    kf_indices,
-    iteration="final",
+        frames,
+        gaussians,
+        dataset,
+        save_dir,
+        pipe,
+        background,
+        kf_indices,
+        iteration="final",
+        resolution=0,
+        save_image=False,
 ):
-    interval = 5
+    interval = 1
     img_pred, img_gt, saved_frame_idx = [], [], []
     end_idx = len(frames) - 1 if iteration == "final" or "before_opt" else iteration
     psnr_array, ssim_array, lpips_array = [], [], []
     cal_lpips = LearnedPerceptualImagePatchSimilarity(
         net_type="alex", normalize=True
     ).to("cuda")
+
+
+    save_dir = save_dir + 'multi_res_rendering/result_{}'.format(resolution)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+
     for idx in range(0, end_idx, interval):
         if idx in kf_indices:
             continue
         saved_frame_idx.append(idx)
         frame = frames[idx]
-        gt_image, _, _ = dataset[idx]
+
+        if resolution == 0:
+            gt_image, _, _ = dataset[idx]
+        elif resolution == 1:
+            gt_image, _, _ = dataset[idx]
+            gt_image = F.interpolate(gt_image.unsqueeze(0), scale_factor=2, mode='bilinear',
+                                     align_corners=True).squeeze()
+            frame.image_height, frame.image_width = int(frame.image_height * 2), int(frame.image_width * 2)
+        elif resolution == 2:
+            gt_image, _, _ = dataset[idx]
+            gt_image = F.interpolate(gt_image.unsqueeze(0), scale_factor=0.5, mode='bilinear',
+                                     align_corners=True).squeeze()
+            frame.image_height, frame.image_width = int(frame.image_height / 4), int(frame.image_width / 4)
+        elif resolution == 3:
+            gt_image, _, _ = dataset[idx]
+            gt_image = F.interpolate(gt_image.unsqueeze(0), scale_factor=0.25, mode='bilinear',
+                                     align_corners=True).squeeze()
+            frame.image_height, frame.image_width = int(frame.image_height / 2), int(frame.image_width / 2)
+        elif resolution == 4:
+            gt_image, _, _ = dataset[idx]
+            gt_image = F.interpolate(gt_image.unsqueeze(0), scale_factor=0.125, mode='bilinear',
+                                     align_corners=True).squeeze()
+            frame.image_height, frame.image_width = int(frame.image_height / 2), int(frame.image_width / 2)
+        else:
+            return
+
+        # if resolution == 0:
+        #     gt_image, _, _ = dataset[idx]
+        # elif resolution == 1:
+        #     gt_image, _, _ = dataset[idx]
+        #     gt_image = F.interpolate(gt_image.unsqueeze(0), scale_factor=2, mode='bilinear', align_corners=True).squeeze()
+        #     frame.image_height, frame.image_width = int(frame.image_height * 2), int(frame.image_width * 2)
+        # elif resolution == 2:
+        #     gt_image, _, _ = dataset[idx]
+        #     gt_image = F.interpolate(gt_image.unsqueeze(0), scale_factor=4, mode='bilinear', align_corners=True).squeeze()
+        #     frame.image_height, frame.image_width = int(frame.image_height * 2), int(frame.image_width * 2)
+        # elif resolution == 3:
+        #     gt_image, _, _ = dataset[idx]
+        #     gt_image = F.interpolate(gt_image.unsqueeze(0), scale_factor=0.5, mode='bilinear', align_corners=True).squeeze()
+        #     frame.image_height, frame.image_width = int(frame.image_height / 8), int(frame.image_width / 8)
+        # elif resolution == 4:
+        #     gt_image, _, _ = dataset[idx]
+        #     gt_image = F.interpolate(gt_image.unsqueeze(0), scale_factor=0.25, mode='bilinear', align_corners=True).squeeze()
+        #     frame.image_height, frame.image_width = int(frame.image_height / 2), int(frame.image_width / 2)
+        # else:
+        #     return
 
         rendering = render(frame, gaussians, pipe, background)["render"]
+
+        if save_image:
+            save_path = os.path.join(save_dir, '{}.png'.format(idx))
+            vutils.save_image(rendering, save_path, normalize=True)
+
         image = torch.clamp(rendering, 0.0, 1.0)
 
         gt = (gt_image.cpu().numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
-        pred = (image.detach().cpu().numpy().transpose((1, 2, 0)) * 255).astype(
-            np.uint8
-        )
+        pred = (image.detach().cpu().numpy().transpose((1, 2, 0)) * 255).astype(np.uint8)
         gt = cv2.cvtColor(gt, cv2.COLOR_BGR2RGB)
         pred = cv2.cvtColor(pred, cv2.COLOR_BGR2RGB)
         img_pred.append(pred)
@@ -165,7 +226,7 @@ def eval_rendering(
     output["mean_lpips"] = float(np.mean(lpips_array))
 
     Log(
-        f'mean psnr: {output["mean_psnr"]}, ssim: {output["mean_ssim"]}, lpips: {output["mean_lpips"]}',
+        f'{resolution}, mean psnr: {output["mean_psnr"]}, ssim: {output["mean_ssim"]}, lpips: {output["mean_lpips"]}',
         tag="Eval",
     )
 
@@ -189,4 +250,5 @@ def save_gaussians(gaussians, name, iteration, final=False):
         point_cloud_path = os.path.join(
             name, "point_cloud/iteration_{}".format(str(iteration))
         )
+    print("save_gaussians in: ", point_cloud_path)
     gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))

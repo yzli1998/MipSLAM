@@ -85,6 +85,8 @@ class FrontEnd(mp.Process):
                         inv_depth
                     ) * torch.where(invalid_depth_mask, inv_std * 0.5, inv_std * 0.2)
                     initial_depth = 1.0 / inv_initial_depth
+                    del inv_depth, inv_median_depth, inv_std, valid_mask
+                    del invalid_depth_mask, inv_initial_depth
                 else:
                     median_depth, std, valid_mask = get_median_depth(
                         depth, opacity, mask=valid_rgb, return_std=True
@@ -99,13 +101,20 @@ class FrontEnd(mp.Process):
                     initial_depth = depth + torch.randn_like(depth) * torch.where(
                         invalid_depth_mask, std * 0.5, std * 0.2
                     )
+                    del median_depth, std, valid_mask, invalid_depth_mask
 
-                initial_depth[~valid_rgb] = 0  # Ignore the invalid rgb pixels
-            return initial_depth.cpu().numpy()[0]
+                initial_depth[~valid_rgb] = 0
+            del gt_img, valid_rgb
+            result = initial_depth.cpu().numpy()[0]
+            del initial_depth
+            return result
         # use the observed depth
         initial_depth = torch.from_numpy(viewpoint.depth).unsqueeze(0)
-        initial_depth[~valid_rgb.cpu()] = 0  # Ignore the invalid rgb pixels
-        return initial_depth[0].numpy()
+        initial_depth[~valid_rgb.cpu()] = 0
+        del gt_img, valid_rgb
+        result = initial_depth[0].numpy()
+        del initial_depth
+        return result
 
     def initialize(self, cur_frame_idx, viewpoint):
         self.initialized = not self.monocular
@@ -160,15 +169,22 @@ class FrontEnd(mp.Process):
         )
 
         pose_optimizer = torch.optim.Adam(opt_params)
+
+        # Keep last render_pkg for return
+        render_pkg = None
         for tracking_itr in range(self.tracking_itr_num):
+            # Free previous iteration's render_pkg before new render
+            if render_pkg is not None:
+                del render_pkg
+
             render_pkg = render(
                 viewpoint, self.gaussians, self.pipeline_params, self.background
             )
-            image, depth, opacity = (
-                render_pkg["render"],
-                render_pkg["depth"],
-                render_pkg["opacity"],
-            )
+
+            image = render_pkg["render"]
+            depth = render_pkg["depth"]
+            opacity = render_pkg["opacity"]
+
             pose_optimizer.zero_grad()
             loss_tracking = get_loss_tracking(
                 self.config, image, depth, opacity, viewpoint
@@ -178,6 +194,8 @@ class FrontEnd(mp.Process):
             with torch.no_grad():
                 pose_optimizer.step()
                 converged = update_pose(viewpoint)
+
+            del loss_tracking
 
             if tracking_itr % 10 == 0:
                 self.q_main2vis.put(
@@ -192,7 +210,11 @@ class FrontEnd(mp.Process):
             if converged:
                 break
 
-        self.median_depth = get_median_depth(depth, opacity)
+        del pose_optimizer, opt_params
+
+        self.median_depth = get_median_depth(
+            render_pkg["depth"], render_pkg["opacity"]
+        )
         return render_pkg
 
     def is_keyframe(
@@ -212,8 +234,11 @@ class FrontEnd(mp.Process):
         last_kf_CW = getWorld2View2(last_kf.R, last_kf.T)
         last_kf_WC = torch.linalg.inv(last_kf_CW)
         dist = torch.norm((pose_CW @ last_kf_WC)[0:3, 3])
+
         dist_check = dist > kf_translation * self.median_depth
         dist_check2 = dist > kf_min_translation * self.median_depth
+
+        del pose_CW, last_kf_CW, last_kf_WC
 
         union = torch.logical_or(
             cur_frame_visibility_filter, occ_aware_visibility[last_keyframe_idx]
@@ -310,7 +335,7 @@ class FrontEnd(mp.Process):
 
     def cleanup(self, cur_frame_idx):
         self.cameras[cur_frame_idx].clean()
-        if cur_frame_idx % 10 == 0:
+        if cur_frame_idx % 5 == 0:
             torch.cuda.empty_cache()
 
     def run(self):
@@ -403,8 +428,10 @@ class FrontEnd(mp.Process):
                         kf_window=current_window_dict,
                     )
                 )
+                del keyframes, current_window_dict
 
                 if self.requested_keyframe > 0:
+                    del render_pkg
                     self.cleanup(cur_frame_idx)
                     cur_frame_idx += 1
                     continue
@@ -412,6 +439,7 @@ class FrontEnd(mp.Process):
                 last_keyframe_idx = self.current_window[0]
                 check_time = (cur_frame_idx - last_keyframe_idx) >= self.kf_interval
                 curr_visibility = (render_pkg["n_touched"] > 0).long()
+
                 create_kf = self.is_keyframe(
                     cur_frame_idx,
                     last_keyframe_idx,
@@ -444,6 +472,7 @@ class FrontEnd(mp.Process):
                         Log(
                             "Keyframes lacks sufficient overlap to initialize the map, resetting."
                         )
+                        del render_pkg, curr_visibility
                         continue
                     depth_map = self.add_new_keyframe(
                         cur_frame_idx,
@@ -451,10 +480,13 @@ class FrontEnd(mp.Process):
                         opacity=render_pkg["opacity"],
                         init=False,
                     )
+                    del render_pkg, curr_visibility
                     self.request_keyframe(
                         cur_frame_idx, viewpoint, self.current_window, depth_map
                     )
+                    del depth_map
                 else:
+                    del render_pkg, curr_visibility
                     self.cleanup(cur_frame_idx)
                 cur_frame_idx += 1
 

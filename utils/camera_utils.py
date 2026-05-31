@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 
+import numpy as np
+
 from gaussian_splatting.utils.graphics_utils import getProjectionMatrix2, getWorld2View2
 from utils.slam_utils import image_gradient, image_gradient_mask
 
@@ -61,6 +63,11 @@ class Camera(nn.Module):
         )
 
         self.projection_matrix = projection_matrix.to(device=device)
+
+        tan_fovx = np.tan(self.FoVx / 2.0)
+        tan_fovy = np.tan(self.FoVy / 2.0)
+        self.focal_y = self.image_height / (2.0 * tan_fovy)
+        self.focal_x = self.image_width / (2.0 * tan_fovx)
 
     @staticmethod
     def init_from_dataset(dataset, idx, projection_matrix):

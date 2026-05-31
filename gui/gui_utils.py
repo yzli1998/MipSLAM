@@ -94,6 +94,7 @@ class GaussianPacket:
             self.active_sh_degree = gaussians.active_sh_degree
             self.get_opacity = gaussians.get_opacity.detach().clone()
             self.get_scaling = gaussians.get_scaling.detach().clone()
+            self.get_scaling_with_3D_filter = gaussians.get_scaling_with_3D_filter.detach().clone()
             self.get_rotation = gaussians.get_rotation.detach().clone()
             self.max_sh_degree = gaussians.max_sh_degree
             self.get_features = gaussians.get_features.detach().clone()

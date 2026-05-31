@@ -29,6 +29,7 @@ def render(
     scaling_modifier=1.0,
     override_color=None,
     mask=None,
+    init=False
 ):
     """
     Render the scene.
@@ -60,6 +61,8 @@ def render(
         image_width=int(viewpoint_camera.image_width),
         tanfovx=tanfovx,
         tanfovy=tanfovy,
+        # kernel_size=0.1,
+        # subpixel_offset=torch.zeros((int(viewpoint_camera.image_height), int(viewpoint_camera.image_width), 2), dtype=torch.float32, device="cuda"),
         bg=bg_color,
         scale_modifier=scaling_modifier,
         viewmatrix=viewpoint_camera.world_view_transform,
@@ -86,10 +89,11 @@ def render(
         cov3D_precomp = pc.get_covariance(scaling_modifier)
     else:
         # check if the covariance is isotropic
-        if pc.get_scaling.shape[-1] == 1:
-            scales = pc.get_scaling.repeat(1, 3)
+        scaling_data = pc.get_scaling if init else pc.get_scaling_with_3D_filter
+        if scaling_data.shape[-1] == 1:
+            scales = scaling_data.repeat(1, 3)
         else:
-            scales = pc.get_scaling
+            scales = scaling_data
         rotations = pc.get_rotation
 
     # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors

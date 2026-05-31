@@ -26,7 +26,7 @@ from gaussian_splatting.utils.general_utils import (
     inverse_sigmoid,
     strip_symmetric,
 )
-from gaussian_splatting.utils.graphics_utils import BasicPointCloud, getWorld2View2
+from gaussian_splatting.utils.graphics_utils import BasicPointCloud, getWorld2View2, extract_descriptor, fusion_point
 from gaussian_splatting.utils.sh_utils import RGB2SH
 from gaussian_splatting.utils.system_utils import mkdir_p
 
@@ -65,6 +65,8 @@ class GaussianModel:
 
         self.isotropic = False
 
+        self.record_times = 0
+
     def build_covariance_from_scaling_rotation(
         self, scaling, scaling_modifier, rotation
     ):
@@ -76,6 +78,14 @@ class GaussianModel:
     @property
     def get_scaling(self):
         return self.scaling_activation(self._scaling)
+
+    @property
+    def get_scaling_with_3D_filter(self):
+        scales = self.get_scaling
+
+        scales = torch.square(scales) + torch.square(self.filter_3D)
+        scales = torch.sqrt(scales)
+        return scales
 
     @property
     def get_rotation(self):
@@ -103,6 +113,122 @@ class GaussianModel:
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
+
+    def record_point(self, cam_info, scale=2.0, init_frame=None, depthmap=None, anchor_view=None):
+        cam = cam_info
+        image_ab = (torch.exp(cam.exposure_a)) * cam.original_image + cam.exposure_b
+        image_ab = torch.clamp(image_ab, 0.0, 1.0)
+        rgb_raw = (image_ab * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy()
+
+        if depthmap is not None:
+            rgb = o3d.geometry.Image(rgb_raw.astype(np.uint8))
+            depth = o3d.geometry.Image(depthmap.astype(np.float32))
+        else:
+            depth_raw = cam.depth
+            if depth_raw is None:
+                depth_raw = np.empty((cam.image_height, cam.image_width))
+
+            if self.config["Dataset"]["sensor_type"] == "monocular":
+                depth_raw = (
+                                    np.ones_like(depth_raw)
+                                    + (np.random.randn(depth_raw.shape[0], depth_raw.shape[1]) - 0.5)
+                                    * 0.05
+                            ) * scale
+
+            rgb = o3d.geometry.Image(rgb_raw.astype(np.uint8))
+            depth = o3d.geometry.Image(depth_raw.astype(np.float32))
+
+        downsample_factor = self.config["Dataset"]["pcd_downsample"]
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+            rgb,
+            depth,
+            depth_scale=1.0,
+            depth_trunc=100.0,
+            convert_rgb_to_intensity=False,
+        )
+
+        W2C = getWorld2View2(cam.R, cam.T).cpu().numpy()
+        pcd_tmp = o3d.geometry.PointCloud.create_from_rgbd_image(
+            rgbd,
+            o3d.camera.PinholeCameraIntrinsic(
+                cam.image_width,
+                cam.image_height,
+                cam.fx,
+                cam.fy,
+                cam.cx,
+                cam.cy,
+            ),
+            extrinsic=W2C,
+            project_valid_depth_only=True,
+        )
+        pcd_tmp = pcd_tmp.random_down_sample(1.0 / downsample_factor)
+        pcd_tmp.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=30))
+        new_xyz = np.asarray(pcd_tmp.points)
+        new_normal = np.asarray(pcd_tmp.normals)
+
+        R = W2C[:3, :3]
+        t = W2C[:3, 3]
+        cam_points = (R @ new_xyz.T + t.reshape(3, 1)).T
+        cam_normals = (R @ new_normal.T).T
+        cam.cam_points = cam_points
+
+        cam.descriptor = extract_descriptor(image_ab.detach().cpu().numpy())
+        self.record_times += 1
+        if anchor_view is not None and self.record_times % 5 == 0:
+            fusion_point(anchor_view, cam)
+
+
+    @torch.no_grad()
+    def compute_3D_filter(self, cameras, floater_mask=None):
+        # print("Computing 3D filter")
+        # TODO consider focal length and image width
+        xyz = self.get_xyz
+        distance = torch.ones((xyz.shape[0]), device=xyz.device) * 100000.0
+        valid_points = torch.zeros((xyz.shape[0]), device=xyz.device, dtype=torch.bool)
+
+        # we should use the focal length of the highest resolution camera
+        focal_length = 0.
+        for camera in cameras:
+
+            # transform points to camera space
+            R = camera.R.detach().clone().transpose(-1, -2).float()
+            T = camera.T.detach().clone().float()
+            # R is stored transposed due to 'glm' in CUDA code so we don't neet transopse here
+            xyz_cam = xyz @ R + T[None, :]
+
+            xyz_to_cam = torch.norm(xyz_cam, dim=1)
+
+            # project to screen space
+            valid_depth = xyz_cam[:, 2] > 0.2
+
+            x, y, z = xyz_cam[:, 0], xyz_cam[:, 1], xyz_cam[:, 2]
+            z = torch.clamp(z, min=0.001)
+
+            x = x / z * camera.focal_x + camera.image_width / 2.0
+            y = y / z * camera.focal_y + camera.image_height / 2.0
+
+            # in_screen = torch.logical_and(torch.logical_and(x >= 0, x < camera.image_width), torch.logical_and(y >= 0, y < camera.image_height))
+
+            # use similar tangent space filtering as in the paper
+            in_screen = torch.logical_and(
+                torch.logical_and(x >= -0.15 * camera.image_width, x <= camera.image_width * 1.15),
+                torch.logical_and(y >= -0.15 * camera.image_height, y <= 1.15 * camera.image_height))
+
+            valid = torch.logical_and(valid_depth, in_screen)
+
+            # distance[valid] = torch.min(distance[valid], xyz_to_cam[valid])
+            distance[valid] = torch.min(distance[valid], z[valid])
+            valid_points = torch.logical_or(valid_points, valid)
+            if focal_length < camera.focal_x:
+                focal_length = camera.focal_x
+
+        distance[~valid_points] = distance[valid_points].max()
+
+        # TODO remove hard coded value
+        # TODO box to gaussian transform
+        filter_3D = distance / focal_length * (0.2 ** 0.5)
+
+        self.filter_3D = filter_3D[..., None]
 
     def create_pcd_from_image(self, cam_info, init=False, scale=2.0, depthmap=None):
         cam = cam_info
