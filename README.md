@@ -132,7 +132,7 @@ This work incorporates many open-source codes. We extend our gratitude to the au
 If you found this code/work to be useful in your own research, please consider citing the following:
 
 ```bibtex
-@inproceedings{Li:Li:etal:ICRA2026,
+@inproceedings{li2026mipslam,
   title={{M}ip{SLAM}: {A}lias-{F}ree {G}aussian {S}platting {SLAM}},
   author={Yingzhao Li and Yan Li and Shixiong Tian and Yanjie Liu and Lijun Zhao and Gim Hee Lee},
   booktitle={Proceedings of the IEEE International Conference on Robotics and Automation (ICRA)},
