@@ -39,7 +39,7 @@ This software implements the dense SLAM system presented in our paper <a href="h
 <br>
 
 # Note
-- A version with higher localization accuracy and better rendering quality is coming soon.
+- A version with higher localization accuracy and better rendering quality is coming soon. We will also provide rendering results at the original resolution on the Replica and TUM datasets. This allows readers to compare them with our results.
 
 # Getting Started
 ## Installation
